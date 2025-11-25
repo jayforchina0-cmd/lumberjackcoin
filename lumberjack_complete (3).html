@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lumberjack Coin</title>
+<style>
+  body { margin: 0; background: black; overflow: hidden; }
+  #ca {
+    position: absolute;
+    top: 10px;
+    width: 100%;
+    text-align: center;
+    font-family: monospace;
+    font-size: 18px;
+    color: #00ff99;
+    z-index: 10;
+  }
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+  }
+</style>
+</head>
+<body>
+
+<div id="ca">Contract: 2485WoG3v5RE6cKffqG5XpHhvNHz4gvyd6aYZ98Apump</div>
+<canvas id="game" width="800" height="400"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+// GAME VARIABLES
+let player = { x: 50, y: 300, w: 20, h: 30, vy: 0, jumping: false, rotation: 0, spinning: false, spinRotation: 0, jumpsLeft: 2, slashing: false };
+let gravity = 0.6;
+let backgroundOffset = 0;
+let obstacles = [];
+let powerups = [];
+let particles = [];
+let slashEffects = [];
+let score = 0;
+let distance = 0;
+let gameSpeed = 4;
+let gameTime = 0;
+let spinTimer = 0;
+let slashTimer = 0;
+let isPaused = false;
+let isGameOver = false;
+let finalScore = 0;
+
+// SPAWNERS
+function spawnObstacle() {
+    const type = Math.random() > 0.5 ? 'tree' : 'log';
+    obstacles.push({ 
+        x: canvas.width, 
+        y: type === 'tree' ? 310 : 340, 
+        w: 30, 
+        h: type === 'tree' ? 60 : 30,
+        type: type
+    });
+}
+function spawnPowerup() {
+    powerups.push({ 
+        x: canvas.width, 
+        y: 250 + Math.random() * 50, 
+        w: 20, 
+        h: 20,
+        floatOffset: Math.random() * Math.PI * 2
+    });
+}
+setInterval(spawnObstacle, 1800);
+setInterval(spawnPowerup, 4000);
+
+// INPUT
+addEventListener("keydown", e => {
+    // Pause/Unpause with P (only when not game over)
+    if (e.code === "KeyP" && !isGameOver) {
+        isPaused = !isPaused;
+        return;
+    }
+    
+    // Restart with R (works in pause and game over)
+    if ((isPaused || isGameOver) && e.code === "KeyR") {
+        location.reload();
+        return;
+    }
+    
+    // Don't process other inputs if paused or game over
+    if (isPaused || isGameOver) return;
+    
+    if ((e.code === "Space" || e.code === "ArrowUp") && player.jumpsLeft > 0) {
+        player.vy = -13;
+        player.jumping = true;
+        player.jumpsLeft--;
+        player.rotation = -0.3;
+        
+        // Double jump effect (second jump is cooler!)
+        if (player.jumpsLeft === 0) {
+            createDoubleJumpEffect(player.x + player.w/2, player.y + player.h);
+            createSparkles(player.x + player.w/2, player.y + player.h);
+        } else {
+            // Regular jump effect
+            createJumpDust(player.x + player.w/2, player.y + player.h);
+        }
+    }
+    
+    // Slash attack with X key
+    if (e.code === "KeyX" && !player.slashing) {
+        player.slashing = true;
+        slashTimer = 15;
+        
+        // Create multiple slash effects for cooler animation
+        for (let i = 0; i < 3; i++) {
+            slashEffects.push({
+                x: player.x + player.w + i * 10,
+                y: player.y + player.h/2 - 20 + i * 5,
+                life: 15 - i * 2,
+                maxLife: 15 - i * 2,
+                offset: i
+            });
+        }
+        
+        // Check if any trees are in range
+        let treeCut = false;
+        obstacles.forEach((o, index) => {
+            if (o.type === 'tree' && 
+                o.x > player.x && 
+                o.x < player.x + 60 &&
+                Math.abs(o.y - player.y) < 50) {
+                // Tree cut! Remove it
+                treeCut = true;
+                createTreeCutEffect(o.x + o.w/2, o.y + o.h/2);
+                createWoodChips(o.x + o.w/2, o.y + o.h/2);
+                createSlashSparks(o.x + o.w/2, o.y + o.h/2);
+                obstacles.splice(index, 1);
+                score += 5;
+            }
+        });
+        
+        // Even if no tree hit, create air slash effects
+        if (!treeCut) {
+            createAirSlash(player.x + player.w + 30, player.y + player.h/2);
+        }
+    }
+});
+
+// PARALLAX TREE LAYERS
+function drawTreeLayer(ctx, offset, treeColor, trunkColor, size, density, groundY) {
+    for (let i = 0; i < density; i++) {
+        const x = (i * size * 3 + offset) % canvas.width;
+        const height = size + Math.sin(i * 1.3) * 4;
+
+        ctx.fillStyle = trunkColor;
+        ctx.fillRect(x + size/2 - 2, groundY - height, 4, height);
+
+        ctx.fillStyle = treeColor;
+        ctx.beginPath();
+        ctx.moveTo(x, groundY - height * 0.6);
+        ctx.lineTo(x + size/2, groundY - height);
+        ctx.lineTo(x + size, groundY - height * 0.6);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.moveTo(x + size * 0.15, groundY - height * 0.4);
+        ctx.lineTo(x + size/2, groundY - height * 0.75);
+        ctx.lineTo(x + size * 0.85, groundY - height * 0.4);
+        ctx.closePath();
+        ctx.fill();
+    }
+}
+
+// PARALLAX BACKGROUND
+function drawParallaxBackground() {
+    // Sky gradient
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, "#87CEEB");
+    gradient.addColorStop(1, "#B0D4E8");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Fade background trees more
+    ctx.globalAlpha = 0.3;
+    drawTreeLayer(ctx, backgroundOffset * 0.2, "#b0e8a2", "#7f9b73", 25, 20, canvas.height - 80);
+    ctx.globalAlpha = 0.5;
+    drawTreeLayer(ctx, backgroundOffset * 0.4, "#74c97e", "#587052", 40, 15, canvas.height - 60);
+    ctx.globalAlpha = 0.7;
+    drawTreeLayer(ctx, backgroundOffset * 0.7, "#3d8f46", "#3c2f24", 55, 12, canvas.height - 40);
+    ctx.globalAlpha = 1;
+
+    // Enhanced ground with shadow and grass texture
+    ctx.fillStyle = "#1a7a28";
+    ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
+    
+    // Grass highlights
+    ctx.fillStyle = "#2faa3b";
+    for (let i = 0; i < canvas.width; i += 10) {
+        ctx.fillRect(i, canvas.height - 30, 5, 2);
+    }
+    
+    // Ground shadow/depth
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    ctx.fillRect(0, canvas.height - 30, canvas.width, 5);
+}
+
+// HITBOX CHECKER
+function AABB(a, b) {
+    return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+    );
+}
+
+// PARTICLE SYSTEM
+function createExplosion(x, y, color, count = 15) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            life: 30,
+            maxLife: 30,
+            alpha: 1,
+            color: color,
+            size: 4
+        });
+    }
+}
+
+function createCoinExplosion(x, y) {
+    for (let i = 0; i < 25; i++) {
+        const angle = (Math.PI * 2 * i) / 25;
+        particles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * (3 + Math.random() * 3),
+            vy: Math.sin(angle) * (3 + Math.random() * 3),
+            life: 40,
+            maxLife: 40,
+            alpha: 1,
+            color: i % 2 === 0 ? "gold" : "#FFD700",
+            size: 3
+        });
+    }
+}
+
+function createSparkles(x, y) {
+    for (let i = 0; i < 15; i++) {
+        particles.push({
+            x: x + (Math.random() - 0.5) * 20,
+            y: y + (Math.random() - 0.5) * 20,
+            vx: (Math.random() - 0.5) * 2,
+            vy: (Math.random() - 0.5) * 2,
+            life: 20,
+            maxLife: 20,
+            alpha: 1,
+            color: "white",
+            size: 2,
+            sparkle: true
+        });
+    }
+}
+
+function createWoodChips(x, y) {
+    for (let i = 0; i < 30; i++) {
+        particles.push({
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 10,
+            vy: Math.random() * -10 - 2,
+            life: 50,
+            maxLife: 50,
+            alpha: 1,
+            color: i % 3 === 0 ? "#8B4513" : (i % 3 === 1 ? "#A0522D" : "#CD853F"),
+            size: 4 + Math.random() * 3,
+            rotation: Math.random() * Math.PI * 2,
+            rotationSpeed: (Math.random() - 0.5) * 0.4
+        });
+    }
+}
+
+function createSlashSparks(x, y) {
+    for (let i = 0; i < 20; i++) {
+        const angle = (Math.PI * 2 * i) / 20;
+        particles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * (5 + Math.random() * 5),
+            vy: Math.sin(angle) * (5 + Math.random() * 5),
+            life: 20,
+            maxLife: 20,
+            alpha: 1,
+            color: i % 2 === 0 ? "#00FFFF" : "#FFFFFF",
+            size: 3,
+            sparkle: true
+        });
+    }
+}
+
+function createTreeCutEffect(x, y) {
+    // Create lines showing where the tree was sliced
+    for (let i = 0; i < 5; i++) {
+        particles.push({
+            x: x - 20 + Math.random() * 40,
+            y: y,
+            vx: 0,
+            vy: -2,
+            life: 30,
+            maxLife: 30,
+            alpha: 1,
+            color: "#FFFF00",
+            size: 2,
+            isLine: true,
+            lineLength: 15
+        });
+    }
+}
+
+function createAirSlash(x, y) {
+    for (let i = 0; i < 8; i++) {
+        particles.push({
+            x: x + Math.random() * 20 - 10,
+            y: y + Math.random() * 20 - 10,
+            vx: 3,
+            vy: (Math.random() - 0.5) * 2,
+            life: 15,
+            maxLife: 15,
+            alpha: 1,
+            color: "#88FFFF",
+            size: 2,
+            sparkle: true
+        });
+    }
+}
+
+function createDoubleJumpEffect(x, y) {
+    // Burst ring effect
+    for (let i = 0; i < 30; i++) {
+        const angle = (Math.PI * 2 * i) / 30;
+        particles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * (4 + Math.random() * 2),
+            vy: Math.sin(angle) * (4 + Math.random() * 2),
+            life: 25,
+            maxLife: 25,
+            alpha: 1,
+            color: i % 3 === 0 ? "#00FFFF" : (i % 3 === 1 ? "#FFFFFF" : "#88FFFF"),
+            size: 3,
+            sparkle: true
+        });
+    }
+    
+    // Energy waves
+    for (let i = 0; i < 3; i++) {
+        particles.push({
+            x: x,
+            y: y,
+            vx: 0,
+            vy: 0,
+            life: 20,
+            maxLife: 20,
+            alpha: 1,
+            color: "#00FFFF",
+            size: 5,
+            isWave: true,
+            waveRadius: 10 + i * 8,
+            waveSpeed: 3,
+            waveDelay: i * 3
+        });
+    }
+    
+    // Upward boost trails
+    for (let i = 0; i < 15; i++) {
+        particles.push({
+            x: x + (Math.random() - 0.5) * 20,
+            y: y,
+            vx: (Math.random() - 0.5) * 1,
+            vy: 2 + Math.random() * 2,
+            life: 30,
+            maxLife: 30,
+            alpha: 1,
+            color: i % 2 === 0 ? "#00DDFF" : "#FFFFFF",
+            size: 4,
+            isTrail: true
+        });
+    }
+}
+
+function createJumpDust(x, y) {
+    for (let i = 0; i < 8; i++) {
+        particles.push({
+            x: x + (Math.random() - 0.5) * 15,
+            y: y,
+            vx: (Math.random() - 0.5) * 2,
+            vy: Math.random() * 2,
+            life: 20,
+            maxLife: 20,
+            alpha: 1,
+            color: "#DDD",
+            size: 3
+        });
+    }
+}
+
+// DRAW LUMBERJACK (Clash Royale style with rigging)
+function drawLumberjack(x, y, w, h, rotation) {
+    ctx.save();
+    ctx.translate(x + w/2, y + h/2);
+    ctx.rotate(rotation);
+    
+    // Calculate animation based on jumping/running
+    const runCycle = Math.sin(gameTime * 0.2) * 0.15;
+    const armSwing = Math.sin(gameTime * 0.2) * 0.3;
+    const legSwing = Math.sin(gameTime * 0.25) * 0.4;
+    
+    // If jumping, use different poses
+    const isInAir = player.jumping;
+    const jumpPose = isInAir ? -0.3 : 0;
+    const landSquash = !isInAir && player.vy > 5 ? 0.1 : 0;
+    
+    // LEGS (draw first, behind body)
+    ctx.save();
+    
+    // Left leg
+    ctx.save();
+    ctx.translate(-w/3.5, h/4);
+    ctx.rotate(isInAir ? -0.2 : legSwing);
+    ctx.fillStyle = "#8B4789";
+    ctx.fillRect(-w/6, 0, w/2.5, h/2.5 + landSquash * 5);
+    ctx.restore();
+    
+    // Right leg
+    ctx.save();
+    ctx.translate(w/4, h/4);
+    ctx.rotate(isInAir ? 0.3 : -legSwing);
+    ctx.fillStyle = "#8B4789";
+    ctx.fillRect(-w/6, 0, w/2.5, h/2.5 + landSquash * 5);
+    ctx.restore();
+    
+    ctx.restore();
+    
+    // BODY/TORSO
+    ctx.save();
+    ctx.rotate(runCycle);
+    
+    // Brown belt
+    ctx.fillStyle = "#654321";
+    ctx.fillRect(-w/2, h/8, w, 3);
+    
+    // Yellow/orange vest
+    ctx.fillStyle = "#FFA500";
+    ctx.fillRect(-w/2, -h/5, w, h/2.5);
+    
+    // Red accent on vest
+    ctx.fillStyle = "#CC3333";
+    ctx.fillRect(-w/3, -h/6, w/1.5, h/4);
+    
+    ctx.restore();
+    
+    // ARMS
+    // Left arm (back arm when running)
+    ctx.save();
+    ctx.translate(-w/2, 0);
+    ctx.rotate(isInAir ? -0.4 : -armSwing);
+    ctx.fillStyle = "#FFCC99";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, w/4, h/5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    
+    // Right arm (holding axe - more animation)
+    ctx.save();
+    ctx.translate(w/2.2, -h/8);
+    ctx.rotate(isInAir ? -0.5 : armSwing * 1.5);
+    
+    // Arm
+    ctx.fillStyle = "#FFCC99";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, w/4, h/5, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Big silver axe attached to arm
+    ctx.save();
+    ctx.translate(w/4, 0);
+    
+    // Handle
+    ctx.strokeStyle = "#8B4513";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(12, -15);
+    ctx.stroke();
+    
+    // Axe blade (silver)
+    ctx.fillStyle = "#C0C0C0";
+    ctx.beginPath();
+    ctx.moveTo(6, -22);
+    ctx.lineTo(20, -18);
+    ctx.lineTo(18, -12);
+    ctx.lineTo(12, -14);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Axe shine
+    ctx.fillStyle = "#E8E8E8";
+    ctx.beginPath();
+    ctx.moveTo(14, -19);
+    ctx.lineTo(17, -17);
+    ctx.lineTo(16, -15);
+    ctx.closePath();
+    ctx.fill();
+    
+    ctx.restore();
+    ctx.restore();
+    
+    // HEAD (on top of body)
+    ctx.save();
+    ctx.translate(0, -h/2.5);
+    ctx.rotate(runCycle * 0.5);
+    
+    // Big orange beard
+    ctx.fillStyle = "#FF8C00";
+    ctx.beginPath();
+    ctx.arc(-w/4, 0, w/2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(w/4, 0, w/2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, h/8, w/2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Head/face
+    ctx.fillStyle = "#FFCC99";
+    ctx.beginPath();
+    ctx.arc(0, 0, w/2.2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Purple horned helmet
+    ctx.fillStyle = "#8B4789";
+    ctx.beginPath();
+    ctx.ellipse(0, -h/10, w/2, h/6, 0, Math.PI, 0);
+    ctx.fill();
+    
+    // Helmet horns
+    ctx.fillStyle = "#DAA520";
+    ctx.beginPath();
+    ctx.moveTo(-w/2.5, -h/10);
+    ctx.lineTo(-w/1.5, 0);
+    ctx.lineTo(-w/3, -h/8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(w/2.5, -h/10);
+    ctx.lineTo(w/1.5, 0);
+    ctx.lineTo(w/3, -h/8);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Angry eyes (look in direction of movement)
+    const eyeOffset = isInAir ? 0.1 : 0;
+    ctx.fillStyle = "white";
+    ctx.beginPath();
+    ctx.arc(-w/5 + eyeOffset, -h/20, w/8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(w/5 + eyeOffset, -h/20, w/8, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.fillStyle = "black";
+    ctx.beginPath();
+    ctx.arc(-w/5 + eyeOffset * 2, -h/20, w/12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(w/5 + eyeOffset * 2, -h/20, w/12, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Angry eyebrows (more expressive)
+    ctx.strokeStyle = "#8B4513";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-w/2.5, -h/3.5);
+    ctx.lineTo(-w/6, -h/2.5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(w/2.5, -h/3.5);
+    ctx.lineTo(w/6, -h/2.5);
+    ctx.stroke();
+    
+    ctx.restore();
+    
+    ctx.restore();
+}
+
+// DRAW OBSTACLE
+function drawObstacle(o) {
+    // Drop shadow
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.fillRect(o.x + 3, o.y + 3, o.w, o.h);
+    
+    if (o.type === 'tree') {
+        // Tree trunk with outline
+        ctx.strokeStyle = "#4a3218";
+        ctx.lineWidth = 2;
+        ctx.fillStyle = "#8B6F47";
+        ctx.fillRect(o.x + 8, o.y, 14, o.h);
+        ctx.strokeRect(o.x + 8, o.y, 14, o.h);
+        
+        // Trunk texture
+        ctx.fillStyle = "#654321";
+        ctx.fillRect(o.x + 10, o.y + 10, 2, o.h - 20);
+        ctx.fillRect(o.x + 16, o.y + 15, 2, o.h - 25);
+        
+        // Tree top with outline and glow
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = "#1a5f1a";
+        ctx.fillStyle = "#2fa82f";
+        ctx.strokeStyle = "#1a5f1a";
+        ctx.lineWidth = 3;
+        
+        ctx.beginPath();
+        ctx.arc(o.x + 15, o.y, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.arc(o.x + 15, o.y + 10, 15, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        
+        ctx.shadowBlur = 0;
+        
+        // Highlight on leaves
+        ctx.fillStyle = "#3fbf3f";
+        ctx.beginPath();
+        ctx.arc(o.x + 12, o.y - 3, 6, 0, Math.PI * 2);
+        ctx.fill();
+    } else {
+        // Log with strong outline and texture
+        ctx.strokeStyle = "#5a3a1a";
+        ctx.lineWidth = 3;
+        
+        ctx.fillStyle = "#A0522D";
+        ctx.fillRect(o.x, o.y, o.w, o.h);
+        ctx.strokeRect(o.x, o.y, o.w, o.h);
+        
+        ctx.fillStyle = "#CD853F";
+        ctx.fillRect(o.x + 2, o.y + 2, o.w - 4, o.h - 4);
+        
+        // Wood rings with glow
+        ctx.shadowBlur = 3;
+        ctx.shadowColor = "#8B4513";
+        ctx.strokeStyle = "#654321";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(o.x + 8, o.y + o.h/2, 5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(o.x + o.w - 8, o.y + o.h/2, 5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        
+        // Inner rings
+        ctx.strokeStyle = "#8B6F47";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(o.x + 8, o.y + o.h/2, 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(o.x + o.w - 8, o.y + o.h/2, 3, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+}
+
+// DRAW COIN
+function drawCoin(p) {
+    const floatY = p.y + Math.sin(p.floatOffset) * 5;
+    
+    // Drop shadow
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.beginPath();
+    ctx.arc(p.x + p.w/2 + 2, floatY + p.h/2 + 2, p.w/2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Outer glow (stronger)
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = "#FFD700";
+    
+    // Outer ring
+    ctx.strokeStyle = "#DAA520";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(p.x + p.w/2, floatY + p.h/2, p.w/2 + 1, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    // Coin body
+    ctx.fillStyle = "#FFD700";
+    ctx.beginPath();
+    ctx.arc(p.x + p.w/2, floatY + p.h/2, p.w/2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Inner shine (brighter)
+    ctx.fillStyle = "#FFED4E";
+    ctx.beginPath();
+    ctx.arc(p.x + p.w/2 - 3, floatY + p.h/2 - 3, p.w/3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.shadowBlur = 0;
+    
+    // Dollar sign with outline
+    ctx.strokeStyle = "#B8860B";
+    ctx.lineWidth = 3;
+    ctx.font = "bold 14px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.strokeText("$", p.x + p.w/2, floatY + p.h/2);
+    
+    ctx.fillStyle = "#FFF";
+    ctx.fillText("$", p.x + p.w/2, floatY + p.h/2);
+    
+    // Rotating sparkle
+    const sparkleAngle = p.floatOffset * 2;
+    ctx.fillStyle = "white";
+    ctx.shadowBlur = 5;
+    ctx.shadowColor = "white";
+    ctx.beginPath();
+    ctx.arc(
+        p.x + p.w/2 + Math.cos(sparkleAngle) * 12,
+        floatY + p.h/2 + Math.sin(sparkleAngle) * 12,
+        2,
+        0,
+        Math.PI * 2
+    );
+    ctx.fill();
+    ctx.shadowBlur = 0;
+}
+
+// GAME LOOP
+function update() {
+    // Show game over screen if game ended
+    if (isGameOver) {
+        draw();
+        drawGameOverScreen();
+        requestAnimationFrame(update);
+        return;
+    }
+    
+    // Don't update game logic if paused
+    if (isPaused) {
+        draw();
+        drawPauseMenu();
+        requestAnimationFrame(update);
+        return;
+    }
+    
+    gameTime++;
+    backgroundOffset -= 2 + gameSpeed * 0.3;
+    
+    // Gradual speed increase
+    if (gameTime % 300 === 0) gameSpeed = Math.min(gameSpeed + 0.5, 8);
+
+    player.vy += gravity;
+    player.y += player.vy;
+    
+    // Handle slashing
+    if (player.slashing) {
+        slashTimer--;
+        if (slashTimer <= 0) {
+            player.slashing = false;
+        }
+    }
+    
+    // Handle spinning
+    if (player.spinning) {
+        spinTimer--;
+        player.spinRotation += 0.5; // Fast spin
+        if (spinTimer <= 0) {
+            player.spinning = false;
+            player.spinRotation = 0;
+        }
+    } else {
+        // Normal rotation
+        if (player.jumping) {
+            player.rotation = Math.max(player.rotation - 0.02, -0.5);
+        } else {
+            player.rotation = Math.min(player.rotation + 0.05, 0.3);
+        }
+    }
+
+    const groundY = canvas.height - 30 - player.h;
+    if (player.y > groundY) {
+        player.y = groundY;
+        player.jumping = false;
+        player.rotation = 0;
+        player.jumpsLeft = 2; // Reset jumps on ground
+    }
+
+    obstacles.forEach(o => o.x -= gameSpeed);
+    powerups.forEach(p => {
+        p.x -= gameSpeed;
+        p.floatOffset += 0.05;
+    });
+    
+    distance += gameSpeed * 0.1;
+    
+    // Update slash effects
+    slashEffects.forEach(s => s.life--);
+    slashEffects = slashEffects.filter(s => s.life > 0);
+    
+    // Update particles
+    particles.forEach(p => {
+        if (p.isWave) {
+            // Expanding wave effect
+            if (p.waveDelay > 0) {
+                p.waveDelay--;
+            } else {
+                p.waveRadius += p.waveSpeed;
+            }
+        } else {
+            p.x += p.vx;
+            p.y += p.vy;
+            if (!p.isTrail) {
+                p.vy += 0.3; // Gravity for particles
+            }
+        }
+        p.life--;
+        p.alpha = p.life / p.maxLife;
+        if (p.rotation !== undefined) {
+            p.rotation += p.rotationSpeed;
+        }
+    });
+    particles = particles.filter(p => p.life > 0);
+
+    // COLLISIONS
+    obstacles.forEach(o => {
+        if (AABB(player, o)) {
+            createExplosion(player.x + player.w/2, player.y + player.h/2, "red", 30);
+            finalScore = Math.floor(score + distance);
+            isGameOver = true;
+        }
+    });
+
+    powerups = powerups.filter(p => {
+        if (AABB(player, p)) {
+            score += 10;
+            // Trigger spin effect!
+            player.spinning = true;
+            spinTimer = 30; // Spin for 30 frames
+            createCoinExplosion(p.x + p.w/2, p.y + p.h/2);
+            createSparkles(p.x + p.w/2, p.y + p.h/2);
+            return false;
+        }
+        return p.x > -100;
+    });
+
+    obstacles = obstacles.filter(o => o.x > -100);
+
+    draw();
+    requestAnimationFrame(update);
+}
+
+// DRAW
+function draw() {
+    drawParallaxBackground();
+
+    // Score UI with shadow
+    ctx.shadowBlur = 3;
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.fillStyle = "white";
+    ctx.font = "bold 24px monospace";
+    ctx.textAlign = "left";
+    ctx.fillText("🪓 Lumberjack Coin", 20, 35);
+    
+    ctx.font = "18px monospace";
+    ctx.fillText("Score: " + Math.floor(score + distance), 20, 60);
+    ctx.fillText("Speed: " + gameSpeed.toFixed(1) + "x", 20, 85);
+    ctx.fillText("Jumps: " + player.jumpsLeft, 20, 110);
+    ctx.shadowBlur = 0;
+
+    // Draw slash effects
+    slashEffects.forEach(s => {
+        const alpha = s.life / s.maxLife;
+        ctx.globalAlpha = alpha;
+        
+        // Multiple layered arcs for thickness
+        const baseSize = 35 + s.offset * 5;
+        
+        // Outer glow
+        ctx.strokeStyle = "#00FFFF";
+        ctx.lineWidth = 8;
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = "#00FFFF";
+        ctx.beginPath();
+        ctx.arc(s.x, s.y + 20, baseSize, -Math.PI/2.5, Math.PI/2.5);
+        ctx.stroke();
+        
+        // Middle layer
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 5;
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = "#FFFFFF";
+        ctx.beginPath();
+        ctx.arc(s.x - 3, s.y + 20, baseSize - 3, -Math.PI/2.8, Math.PI/2.8);
+        ctx.stroke();
+        
+        // Inner sharp line
+        ctx.strokeStyle = "#FFFF00";
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = "#FFFF00";
+        ctx.beginPath();
+        ctx.arc(s.x - 5, s.y + 20, baseSize - 5, -Math.PI/3, Math.PI/3);
+        ctx.stroke();
+        
+        // Speed lines
+        if (s.offset === 0) {
+            ctx.strokeStyle = "#AAFFFF";
+            ctx.lineWidth = 2;
+            ctx.shadowBlur = 5;
+            for (let i = 0; i < 4; i++) {
+                const angle = -Math.PI/4 + (Math.PI/2 * i/4);
+                const startX = s.x + Math.cos(angle) * 20;
+                const startY = s.y + 20 + Math.sin(angle) * 20;
+                const endX = startX + Math.cos(angle) * 15;
+                const endY = startY + Math.sin(angle) * 15;
+                
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.lineTo(endX, endY);
+                ctx.stroke();
+            }
+        }
+        
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 1;
+    });
+
+    // Draw motion blur trail when spinning
+    if (player.spinning) {
+        for (let i = 0; i < 5; i++) {
+            ctx.globalAlpha = 0.15 - (i * 0.03);
+            drawLumberjack(
+                player.x - i * 3, 
+                player.y, 
+                player.w, 
+                player.h, 
+                player.spinRotation - (i * 0.3)
+            );
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    // Draw main character
+    const finalRotation = player.spinning ? player.spinRotation : player.rotation;
+    drawLumberjack(player.x, player.y, player.w, player.h, finalRotation);
+
+    obstacles.forEach(o => drawObstacle(o));
+    powerups.forEach(p => drawCoin(p));
+    
+    // Draw particles
+    particles.forEach(p => {
+        if (p.isWave && p.waveDelay <= 0) {
+            // Expanding energy wave
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = 4;
+            ctx.globalAlpha = p.alpha * 0.7;
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.waveRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        } else if (p.isTrail) {
+            // Upward boost trails
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.alpha;
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Trail line
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x - p.vx * 3, p.y - p.vy * 3);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        } else if (p.sparkle) {
+            // Sparkle effect (enhanced)
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.alpha;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Star sparkle effect
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p.x - p.size * 2, p.y);
+            ctx.lineTo(p.x + p.size * 2, p.y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y - p.size * 2);
+            ctx.lineTo(p.x, p.y + p.size * 2);
+            ctx.stroke();
+            
+            ctx.shadowBlur = 0;
+        } else if (p.isLine) {
+            // Slash line effect
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = p.size;
+            ctx.globalAlpha = p.alpha;
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = p.color;
+            ctx.beginPath();
+            ctx.moveTo(p.x - p.lineLength/2, p.y);
+            ctx.lineTo(p.x + p.lineLength/2, p.y);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        } else if (p.rotation !== undefined) {
+            // Wood chips with rotation
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.rotation);
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.alpha;
+            ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size);
+            ctx.restore();
+        } else {
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.alpha;
+            ctx.fillRect(p.x, p.y, p.size, p.size);
+        }
+    });
+    ctx.globalAlpha = 1;
+}
+
+update();
+</script>
+
+<script>
+// PAUSE MENU
+function drawPauseMenu() {
+    // Semi-transparent overlay
+    ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Menu box
+    const menuW = 400;
+    const menuH = 300;
+    const menuX = canvas.width / 2 - menuW / 2;
+    const menuY = canvas.height / 2 - menuH / 2;
+    
+    // Box shadow
+    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.fillRect(menuX + 5, menuY + 5, menuW, menuH);
+    
+    // Box background with gradient
+    const gradient = ctx.createLinearGradient(menuX, menuY, menuX, menuY + menuH);
+    gradient.addColorStop(0, "#2d4a2e");
+    gradient.addColorStop(1, "#1a2e1b");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(menuX, menuY, menuW, menuH);
+    
+    // Box border
+    ctx.strokeStyle = "#4a7c4f";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(menuX, menuY, menuW, menuH);
+    
+    // Title
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = "#FFD700";
+    ctx.fillStyle = "#FFD700";
+    ctx.font = "bold 48px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("PAUSED", canvas.width / 2, menuY + 80);
+    ctx.shadowBlur = 0;
+    
+    // Current score
+    ctx.fillStyle = "white";
+    ctx.font = "24px monospace";
+    ctx.fillText("Score: " + Math.floor(score + distance), canvas.width / 2, menuY + 130);
+    
+    // Instructions
+    ctx.font = "20px monospace";
+    ctx.fillStyle = "#00ff99";
+    ctx.fillText("Press P to Resume", canvas.width / 2, menuY + 180);
+    
+    // Restart button
+    ctx.fillStyle = "#cc3333";
+    const btnW = 200;
+    const btnH = 50;
+    const btnX = canvas.width / 2 - btnW / 2;
+    const btnY = menuY + 210;
+    
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.strokeStyle = "#ff4444";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(btnX, btnY, btnW, btnH);
+    
+    ctx.fillStyle = "white";
+    ctx.font = "bold 24px monospace";
+    ctx.fillText("RESTART (R)", canvas.width / 2, btnY + 33);
+    
+    ctx.textAlign = "left";
+}
+
+// GAME OVER SCREEN
+function drawGameOverScreen() {
+    // Semi-transparent overlay
+    ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Menu box
+    const menuW = 450;
+    const menuH = 350;
+    const menuX = canvas.width / 2 - menuW / 2;
+    const menuY = canvas.height / 2 - menuH / 2;
+    
+    // Box shadow
+    ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.fillRect(menuX + 5, menuY + 5, menuW, menuH);
+    
+    // Box background with gradient (red theme)
+    const gradient = ctx.createLinearGradient(menuX, menuY, menuX, menuY + menuH);
+    gradient.addColorStop(0, "#4a1a1a");
+    gradient.addColorStop(1, "#2e0a0a");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(menuX, menuY, menuW, menuH);
+    
+    // Box border
+    ctx.strokeStyle = "#cc3333";
+    ctx.lineWidth = 5;
+    ctx.strokeRect(menuX, menuY, menuW, menuH);
+    
+    // Title with pulsing effect
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = "#ff0000";
+    ctx.fillStyle = "#ff3333";
+    ctx.font = "bold 56px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("GAME OVER", canvas.width / 2, menuY + 90);
+    ctx.shadowBlur = 0;
+    
+    // Skull emoji
+    ctx.font = "60px Arial";
+    ctx.fillText("💀", canvas.width / 2, menuY + 160);
+    
+    // Final score (bigger)
+    ctx.fillStyle = "#FFD700";
+    ctx.font = "bold 32px monospace";
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = "#FFD700";
+    ctx.fillText("Final Score: " + finalScore, canvas.width / 2, menuY + 220);
+    ctx.shadowBlur = 0;
+    
+    // Instructions
+    ctx.font = "20px monospace";
+    ctx.fillStyle = "#ff9999";
+    ctx.fillText("Press R to Restart", canvas.width / 2, menuY + 270);
+    
+    // Restart button
+    ctx.fillStyle = "#00aa00";
+    const btnW = 220;
+    const btnH = 55;
+    const btnX = canvas.width / 2 - btnW / 2;
+    const btnY = menuY + 285;
+    
+    ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.strokeStyle = "#00ff00";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(btnX, btnY, btnW, btnH);
+    
+    ctx.fillStyle = "white";
+    ctx.font = "bold 26px monospace";
+    ctx.fillText("RESTART", canvas.width / 2, btnY + 36);
+    
+    ctx.textAlign = "left";
+}
+
+// Click handler for restart button
+canvas.addEventListener("click", (e) => {
+    if (!isPaused && !isGameOver) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    
+    let menuW, menuH, menuX, menuY, btnW, btnH, btnX, btnY;
+    
+    if (isGameOver) {
+        menuW = 450;
+        menuH = 350;
+        menuX = canvas.width / 2 - menuW / 2;
+        menuY = canvas.height / 2 - menuH / 2;
+        btnW = 220;
+        btnH = 55;
+        btnX = canvas.width / 2 - btnW / 2;
+        btnY = menuY + 285;
+    } else {
+        menuW = 400;
+        menuH = 300;
+        menuX = canvas.width / 2 - menuW / 2;
+        menuY = canvas.height / 2 - menuH / 2;
+        btnW = 200;
+        btnH = 50;
+        btnX = canvas.width / 2 - btnW / 2;
+        btnY = menuY + 210;
+    }
+    
+    if (clickX >= btnX && clickX <= btnX + btnW &&
+        clickY >= btnY && clickY <= btnY + btnH) {
+        location.reload();
+    }
+});
+
+// Keyboard shortcut for restart
+addEventListener("keydown", (e) => {
+    if ((isPaused || isGameOver) && e.code === "KeyR") {
+        location.reload();
+    }
+});
+</script>
+
+</body>
+</html>
